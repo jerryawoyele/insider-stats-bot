@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import { logInfo } from "./logger.js";
-import { getGmgnHolderCount } from "./gmgn.js";
+import { getGmgnHolderCount, getGmgnTokenPrice } from "./gmgn.js";
 import { analyzePoolTransaction } from "./parsers.js";
 
 function shortWallet(wallet) {
@@ -8,14 +8,16 @@ function shortWallet(wallet) {
 }
 
 export class PoolWatcher {
-  constructor({ poolAddress, label, mint, insiderWallets }) {
+  constructor({ poolAddress, label, mint, insiderWallets, onComplete }) {
     this.poolAddress = poolAddress;
     this.label = label;
     this.mint = mint;
+    this.onComplete = onComplete;
     this.insiderWalletSet = new Set(insiderWallets);
     this.seenSignatures = new Set();
     this.processedCount = 0;
     this.completed = false;
+    this.completionReason = null;
     this.stats = {
       interpretedTxCount: 0,
       totalBuyCount: 0,
@@ -31,6 +33,17 @@ export class PoolWatcher {
     this.lastHolderCount = null;
     this.holderSnapshots = [];
     this.lastHolderCheckAt = 0;
+    this.priceCheckTimer = null;
+    this.initialPrice = null;
+    this.latestPrice = null;
+    this.rugDetected = false;
+  }
+
+  async start() {
+    await this.refreshPrice({ force: true, markInitial: true });
+    this.priceCheckTimer = setInterval(() => {
+      this.refreshPrice().catch(() => {});
+    }, config.priceCheckIntervalMs);
   }
 
   async ingestParsedTransaction(tx) {
@@ -93,40 +106,7 @@ export class PoolWatcher {
     }
 
     if (this.processedCount >= config.poolTxTarget) {
-      this.completed = true;
-      const insiderPercent =
-        this.processedCount === 0 ? 0 : (this.stats.insiderTxCount / this.processedCount) * 100;
-      const insiderHolderPercent =
-        this.lastHolderCount && this.lastHolderCount > 0
-          ? (this.insiderWalletSet.size / this.lastHolderCount) * 100
-          : null;
-
-      const rugDetected = false;
-      const accept = !rugDetected && insiderPercent >= 90;
-
-      logInfo(`[${this.label}] Pool analysis complete`, {
-        poolAddress: this.poolAddress,
-        mint: this.mint,
-        totalPoolTxs: this.processedCount,
-        interpretedTxCount: this.stats.interpretedTxCount,
-        totalBuyCount: this.stats.totalBuyCount,
-        totalSellCount: this.stats.totalSellCount,
-        totalBuySol: Number(this.stats.totalBuySol.toFixed(9)),
-        totalSellSol: Number(this.stats.totalSellSol.toFixed(9)),
-        insiderTxCount: this.stats.insiderTxCount,
-        insiderBuyCount: this.stats.insiderBuyCount,
-        insiderSellCount: this.stats.insiderSellCount,
-        insiderBuySol: Number(this.stats.insiderBuySol.toFixed(9)),
-        insiderSellSol: Number(this.stats.insiderSellSol.toFixed(9)),
-        insiderWalletCount: this.insiderWalletSet.size,
-        totalHolders: this.lastHolderCount,
-        insiderHolderPercent:
-          insiderHolderPercent == null ? null : Number(insiderHolderPercent.toFixed(2)),
-        insiderPercent: Number(insiderPercent.toFixed(2)),
-        holderSnapshots: this.holderSnapshots,
-        rugDetected,
-        decision: accept ? "accept" : "reject"
-      });
+      await this.complete("target_reached");
     }
   }
 
@@ -155,5 +135,99 @@ export class PoolWatcher {
       txNumber: this.processedCount,
       holderCount
     });
+  }
+
+  async refreshPrice({ force = false, markInitial = false } = {}) {
+    if (this.completed && !force) {
+      return;
+    }
+
+    const price = await getGmgnTokenPrice(this.mint);
+    if (price == null) {
+      return;
+    }
+
+    this.latestPrice = price;
+
+    if (this.initialPrice == null || markInitial) {
+      this.initialPrice = price;
+      logInfo(`[${this.label}] Initial price snapshot`, {
+        mint: this.mint,
+        poolAddress: this.poolAddress,
+        initialPrice: price
+      });
+      return;
+    }
+
+    const drawdownRatio = this.initialPrice === 0 ? 0 : price / this.initialPrice;
+    logInfo(`[${this.label}] Price snapshot`, {
+      mint: this.mint,
+      poolAddress: this.poolAddress,
+      currentPrice: price,
+      initialPrice: this.initialPrice,
+      drawdownPercent: Number(((1 - drawdownRatio) * 100).toFixed(2))
+    });
+
+    if (drawdownRatio <= 0.1) {
+      this.rugDetected = true;
+      await this.complete("rug_detected");
+    }
+  }
+
+  async complete(reason) {
+    if (this.completed) {
+      return;
+    }
+
+    this.completed = true;
+    this.completionReason = reason;
+    this.stop();
+
+    const insiderPercent =
+      this.processedCount === 0 ? 0 : (this.stats.insiderTxCount / this.processedCount) * 100;
+    const insiderHolderPercent =
+      this.lastHolderCount && this.lastHolderCount > 0
+        ? (this.insiderWalletSet.size / this.lastHolderCount) * 100
+        : null;
+
+    const accept = !this.rugDetected && insiderPercent >= 90;
+
+    logInfo(`[${this.label}] Pool analysis complete`, {
+      poolAddress: this.poolAddress,
+      mint: this.mint,
+      completionReason: reason,
+      totalPoolTxs: this.processedCount,
+      interpretedTxCount: this.stats.interpretedTxCount,
+      totalBuyCount: this.stats.totalBuyCount,
+      totalSellCount: this.stats.totalSellCount,
+      totalBuySol: Number(this.stats.totalBuySol.toFixed(9)),
+      totalSellSol: Number(this.stats.totalSellSol.toFixed(9)),
+      insiderTxCount: this.stats.insiderTxCount,
+      insiderBuyCount: this.stats.insiderBuyCount,
+      insiderSellCount: this.stats.insiderSellCount,
+      insiderBuySol: Number(this.stats.insiderBuySol.toFixed(9)),
+      insiderSellSol: Number(this.stats.insiderSellSol.toFixed(9)),
+      insiderWalletCount: this.insiderWalletSet.size,
+      totalHolders: this.lastHolderCount,
+      insiderHolderPercent:
+        insiderHolderPercent == null ? null : Number(insiderHolderPercent.toFixed(2)),
+      insiderPercent: Number(insiderPercent.toFixed(2)),
+      holderSnapshots: this.holderSnapshots,
+      initialPrice: this.initialPrice,
+      latestPrice: this.latestPrice,
+      rugDetected: this.rugDetected,
+      decision: accept ? "accept" : "reject"
+    });
+
+    if (this.onComplete) {
+      await this.onComplete(this);
+    }
+  }
+
+  stop() {
+    if (this.priceCheckTimer) {
+      clearInterval(this.priceCheckTimer);
+      this.priceCheckTimer = null;
+    }
   }
 }

@@ -501,14 +501,28 @@ export class InsiderBot {
       poolAddress,
       label,
       mint: this.currentToken.mint,
-      insiderWallets: this.currentToken.insiders
+      insiderWallets: this.currentToken.insiders,
+      onComplete: async (completedWatcher) => {
+        logInfo("Pool watcher reached decision threshold", {
+          poolAddress: completedWatcher.poolAddress,
+          label: completedWatcher.label,
+          completionReason: completedWatcher.completionReason
+        });
+        this.unsubscribePoolLog(completedWatcher.poolAddress);
+        this.poolWatchers.delete(completedWatcher.poolAddress);
+      }
     });
 
     this.poolWatchers.set(poolAddress, watcher);
+    await watcher.start();
     this.subscribeToPoolLogs(poolAddress, label);
   }
 
   unsubscribeAllPoolLogs() {
+    for (const watcher of this.poolWatchers.values()) {
+      watcher.stop();
+    }
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.activePoolSubscriptions.clear();
       return;
@@ -535,6 +549,11 @@ export class InsiderBot {
   }
 
   unsubscribePoolLog(poolAddress) {
+    const watcher = this.poolWatchers.get(poolAddress);
+    if (watcher) {
+      watcher.stop();
+    }
+
     const subscriptionId = this.activePoolSubscriptions.get(poolAddress);
     if (!subscriptionId || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.activePoolSubscriptions.delete(poolAddress);

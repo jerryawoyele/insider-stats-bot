@@ -48,5 +48,7 @@ export const config = {
   insiderHistoryMaxPages: getNumberEnv("INSIDER_HISTORY_MAX_PAGES", 10),
   signatureBatchWindowMs: getNumberEnv("SIGNATURE_BATCH_WINDOW_MS", 500),
   holderCheckEveryTxs: getNumberEnv("HOLDER_CHECK_EVERY_TXS", 25),
-  holderCheckMinIntervalMs: getNumberEnv("HOLDER_CHECK_MIN_INTERVAL_MS", 2000)
+  holderCheckMinIntervalMs: getNumberEnv("HOLDER_CHECK_MIN_INTERVAL_MS", 2000),
+  priceCheckIntervalMs: getNumberEnv("PRICE_CHECK_INTERVAL_MS", 2000),
+  gmgnTokenInfoMinIntervalMs: getNumberEnv("GMGN_TOKEN_INFO_MIN_INTERVAL_MS", 2000)
 };
