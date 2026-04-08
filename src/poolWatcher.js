@@ -36,6 +36,7 @@ export class PoolWatcher {
     this.priceCheckTimer = null;
     this.initialPrice = null;
     this.latestPrice = null;
+    this.lastLoggedPrice = null;
     this.rugDetected = false;
   }
 
@@ -151,6 +152,7 @@ export class PoolWatcher {
 
     if (this.initialPrice == null || markInitial) {
       this.initialPrice = price;
+      this.lastLoggedPrice = price;
       logInfo(`[${this.label}] Initial price snapshot`, {
         mint: this.mint,
         poolAddress: this.poolAddress,
@@ -160,15 +162,27 @@ export class PoolWatcher {
     }
 
     const drawdownRatio = this.initialPrice === 0 ? 0 : price / this.initialPrice;
-    logInfo(`[${this.label}] Price snapshot`, {
-      mint: this.mint,
-      poolAddress: this.poolAddress,
-      currentPrice: price,
-      initialPrice: this.initialPrice,
-      drawdownPercent: Number(((1 - drawdownRatio) * 100).toFixed(2))
-    });
+    const drawdownPercent = Math.max(0, (1 - drawdownRatio) * 100);
+    const priceChangePercent =
+      this.initialPrice === 0 ? 0 : ((price - this.initialPrice) / this.initialPrice) * 100;
+    const shouldLogPriceSnapshot =
+      force ||
+      this.lastLoggedPrice == null ||
+      Math.abs(price - this.lastLoggedPrice) > 0;
 
-    if (drawdownRatio <= 0.1) {
+    if (shouldLogPriceSnapshot) {
+      this.lastLoggedPrice = price;
+      logInfo(`[${this.label}] Price snapshot`, {
+        mint: this.mint,
+        poolAddress: this.poolAddress,
+        currentPrice: price,
+        initialPrice: this.initialPrice,
+        priceChangePercent: Number(priceChangePercent.toFixed(2)),
+        drawdownPercent: Number(drawdownPercent.toFixed(2))
+      });
+    }
+
+    if (drawdownRatio <= 0.1 && this.processedCount > 0) {
       this.rugDetected = true;
       await this.complete("rug_detected");
     }
@@ -191,6 +205,7 @@ export class PoolWatcher {
         : null;
 
     const accept = !this.rugDetected && insiderPercent >= 90;
+    const decision = reason === "migration_handoff" ? "handoff" : accept ? "accept" : "reject";
 
     logInfo(`[${this.label}] Pool analysis complete`, {
       poolAddress: this.poolAddress,
@@ -216,7 +231,7 @@ export class PoolWatcher {
       initialPrice: this.initialPrice,
       latestPrice: this.latestPrice,
       rugDetected: this.rugDetected,
-      decision: accept ? "accept" : "reject"
+      decision
     });
 
     if (this.onComplete) {

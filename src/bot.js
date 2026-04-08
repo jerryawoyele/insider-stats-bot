@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import {
   extractInsidersFromDevTransactions,
   isInitialPoolTx,
+  isMigrationLiquidityRemovalTx,
   isMigrationTx,
   isTokenCreateTx,
   parseInitialPoolFromTx,
@@ -349,6 +350,17 @@ export class InsiderBot {
       return;
     }
 
+    if (
+      !this.currentToken.migrationPool &&
+      isMigrationLiquidityRemovalTx(tx, this.currentToken.mint)
+    ) {
+      logInfo("Detected migration liquidity removal for current token", {
+        mint: this.currentToken.mint,
+        signature: tx.signature
+      });
+      await this.handoffExistingPoolWatchers();
+    }
+
     if (!this.currentToken.initialPool && isInitialPoolTx(tx)) {
       const initialPool = parseInitialPoolFromTx(tx);
       if (initialPool) {
@@ -365,6 +377,7 @@ export class InsiderBot {
     if (!this.currentToken.migrationPool && isMigrationTx(tx)) {
       const migrationPool = parseMigrationPoolFromTx(tx);
       if (migrationPool) {
+        await this.handoffExistingPoolWatchers();
         this.currentToken.migrationPool = migrationPool;
         logInfo("Discovered migration pool", {
           mint: this.currentToken.mint,
@@ -516,6 +529,16 @@ export class InsiderBot {
     this.poolWatchers.set(poolAddress, watcher);
     await watcher.start();
     this.subscribeToPoolLogs(poolAddress, label);
+  }
+
+  async handoffExistingPoolWatchers() {
+    for (const watcher of this.poolWatchers.values()) {
+      if (watcher.completed) {
+        continue;
+      }
+
+      await watcher.complete("migration_handoff");
+    }
   }
 
   unsubscribeAllPoolLogs() {

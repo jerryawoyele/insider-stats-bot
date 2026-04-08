@@ -54,6 +54,14 @@ export function parseMigrationPoolFromTx(tx) {
   return match?.toUserAccount || null;
 }
 
+export function isMigrationLiquidityRemovalTx(tx, mint) {
+  if (tx?.type !== "INITIALIZE_ACCOUNT" || tx?.source !== "ASSOCIATED_TOKEN_PROGRAM") {
+    return false;
+  }
+
+  return (tx?.tokenTransfers || []).some((transfer) => transfer?.mint === mint);
+}
+
 export function extractInsidersFromDevTransactions(devWallet, txs) {
   const insiders = new Set();
 
