@@ -1,13 +1,15 @@
 import { InsiderBot } from "./bot.js";
 import { logError } from "./logger.js";
 
-async function main() {
+export async function runBot() {
   const bot = new InsiderBot();
   await bot.start();
   await new Promise(() => {});
 }
 
-main().catch((error) => {
-  logError("Fatal startup error", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  runBot().catch((error) => {
+    logError("Fatal startup error", error);
+    process.exitCode = 1;
+  });
+}

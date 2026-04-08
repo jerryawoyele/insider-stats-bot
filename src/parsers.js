@@ -90,6 +90,60 @@ function findSolTokenTransfer(tx, wallet) {
   });
 }
 
+function findMatchingWsolTransfer(tx, wallet, side) {
+  return (tx?.tokenTransfers || []).find((transfer) => {
+    if (transfer?.mint !== WSOL_MINT) {
+      return false;
+    }
+
+    if (side === "buy") {
+      return transfer?.fromUserAccount === wallet;
+    }
+
+    if (side === "sell") {
+      return transfer?.toUserAccount === wallet;
+    }
+
+    return false;
+  });
+}
+
+function inferSideFromTokenTransfer(tx, mint) {
+  for (const transfer of tx?.tokenTransfers || []) {
+    if (transfer?.mint !== mint) {
+      continue;
+    }
+
+    const receivedWallet = transfer?.toUserAccount;
+    if (receivedWallet && receivedWallet !== METEORA_POOL_AUTHORITY) {
+      const wsolOut = findMatchingWsolTransfer(tx, receivedWallet, "buy");
+      if (wsolOut) {
+        return {
+          wallet: receivedWallet,
+          side: "buy",
+          solAmount: Number(wsolOut.tokenAmount || 0),
+          source: "swap-paired-transfer"
+        };
+      }
+    }
+
+    const sentWallet = transfer?.fromUserAccount;
+    if (sentWallet && sentWallet !== METEORA_POOL_AUTHORITY) {
+      const wsolIn = findMatchingWsolTransfer(tx, sentWallet, "sell");
+      if (wsolIn) {
+        return {
+          wallet: sentWallet,
+          side: "sell",
+          solAmount: Number(wsolIn.tokenAmount || 0),
+          source: "swap-paired-transfer"
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 function findNativePoolTransfer(tx, poolAddress, wallet) {
   return (tx?.nativeTransfers || []).find((transfer) => {
     const fromMatches =
@@ -101,6 +155,14 @@ function findNativePoolTransfer(tx, poolAddress, wallet) {
 }
 
 export function analyzePoolTransaction({ tx, poolAddress, mint, insiderWalletSet }) {
+  const inferredSwap = inferSideFromTokenTransfer(tx, mint);
+  if (inferredSwap) {
+    return {
+      ...inferredSwap,
+      isInsider: insiderWalletSet.has(inferredSwap.wallet)
+    };
+  }
+
   for (const transfer of tx?.tokenTransfers || []) {
     if (transfer?.mint === WSOL_MINT || transfer?.mint !== mint) {
       continue;
