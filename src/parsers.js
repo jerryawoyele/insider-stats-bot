@@ -118,6 +118,9 @@ function findMatchingWsolTransfer(tx, wallet, side) {
 function inferSideFromTokenTransfer(tx, mint) {
   const tokenTransfers = (tx?.tokenTransfers || []).filter((transfer) => transfer?.mint === mint);
   const wsolTransfers = (tx?.tokenTransfers || []).filter((transfer) => transfer?.mint === WSOL_MINT);
+  const feePayer = tx?.feePayer;
+  const inferredPoolAuthority = inferPoolAuthorityFromTokenTransfer(tx, mint);
+  const candidateMatches = [];
 
   for (const tokenTransfer of tokenTransfers) {
     for (const wsolTransfer of wsolTransfers) {
@@ -128,12 +131,13 @@ function inferSideFromTokenTransfer(tx, mint) {
         tokenTransfer.fromUserAccount === wsolTransfer?.toUserAccount;
 
       if (buyMatches) {
-        return {
+        candidateMatches.push({
           wallet: tokenTransfer.toUserAccount,
           side: "buy",
           solAmount: Number(wsolTransfer?.tokenAmount || 0),
-          source: "swap-paired-transfer"
-        };
+          source: "swap-paired-transfer",
+          poolAuthorityCandidate: tokenTransfer.fromUserAccount
+        });
       }
 
       const sellMatches =
@@ -143,14 +147,35 @@ function inferSideFromTokenTransfer(tx, mint) {
         tokenTransfer.toUserAccount === wsolTransfer?.fromUserAccount;
 
       if (sellMatches) {
-        return {
+        candidateMatches.push({
           wallet: tokenTransfer.fromUserAccount,
           side: "sell",
           solAmount: Number(wsolTransfer?.tokenAmount || 0),
-          source: "swap-paired-transfer"
-        };
+          source: "swap-paired-transfer",
+          poolAuthorityCandidate: tokenTransfer.toUserAccount
+        });
       }
     }
+  }
+
+  if (candidateMatches.length > 0) {
+    if (feePayer) {
+      const feePayerMatch = candidateMatches.find((match) => match.wallet === feePayer);
+      if (feePayerMatch) {
+        return feePayerMatch;
+      }
+    }
+
+    if (inferredPoolAuthority) {
+      const nonAuthorityMatch = candidateMatches.find(
+        (match) => match.wallet && match.wallet !== inferredPoolAuthority
+      );
+      if (nonAuthorityMatch) {
+        return nonAuthorityMatch;
+      }
+    }
+
+    return candidateMatches[0];
   }
 
   for (const transfer of tokenTransfers) {
