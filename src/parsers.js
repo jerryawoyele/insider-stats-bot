@@ -7,7 +7,6 @@ function isNativeTransferLike(value) {
 }
 
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
-const METEORA_POOL_AUTHORITY = "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC";
 
 export function isTokenCreateTx(tx) {
   return tx?.type === "UNKNOWN" && tx?.source === "UNKNOWN" && tx?.fee === 10000;
@@ -117,35 +116,102 @@ function findMatchingWsolTransfer(tx, wallet, side) {
 }
 
 function inferSideFromTokenTransfer(tx, mint) {
-  for (const transfer of tx?.tokenTransfers || []) {
-    if (transfer?.mint !== mint) {
-      continue;
-    }
+  const tokenTransfers = (tx?.tokenTransfers || []).filter((transfer) => transfer?.mint === mint);
+  const wsolTransfers = (tx?.tokenTransfers || []).filter((transfer) => transfer?.mint === WSOL_MINT);
 
+  for (const tokenTransfer of tokenTransfers) {
+    for (const wsolTransfer of wsolTransfers) {
+      const buyMatches =
+        tokenTransfer?.toUserAccount &&
+        tokenTransfer?.fromUserAccount &&
+        tokenTransfer.toUserAccount === wsolTransfer?.fromUserAccount &&
+        tokenTransfer.fromUserAccount === wsolTransfer?.toUserAccount;
+
+      if (buyMatches) {
+        return {
+          wallet: tokenTransfer.toUserAccount,
+          side: "buy",
+          solAmount: Number(wsolTransfer?.tokenAmount || 0),
+          source: "swap-paired-transfer"
+        };
+      }
+
+      const sellMatches =
+        tokenTransfer?.fromUserAccount &&
+        tokenTransfer?.toUserAccount &&
+        tokenTransfer.fromUserAccount === wsolTransfer?.toUserAccount &&
+        tokenTransfer.toUserAccount === wsolTransfer?.fromUserAccount;
+
+      if (sellMatches) {
+        return {
+          wallet: tokenTransfer.fromUserAccount,
+          side: "sell",
+          solAmount: Number(wsolTransfer?.tokenAmount || 0),
+          source: "swap-paired-transfer"
+        };
+      }
+    }
+  }
+
+  for (const transfer of tokenTransfers) {
     const receivedWallet = transfer?.toUserAccount;
-    if (receivedWallet && receivedWallet !== METEORA_POOL_AUTHORITY) {
+    if (receivedWallet) {
       const wsolOut = findMatchingWsolTransfer(tx, receivedWallet, "buy");
-      if (wsolOut) {
+      if (wsolOut && wsolOut?.toUserAccount !== receivedWallet) {
         return {
           wallet: receivedWallet,
           side: "buy",
           solAmount: Number(wsolOut.tokenAmount || 0),
-          source: "swap-paired-transfer"
+          source: "swap-paired-transfer-fallback"
         };
       }
     }
 
     const sentWallet = transfer?.fromUserAccount;
-    if (sentWallet && sentWallet !== METEORA_POOL_AUTHORITY) {
+    if (sentWallet) {
       const wsolIn = findMatchingWsolTransfer(tx, sentWallet, "sell");
-      if (wsolIn) {
+      if (wsolIn && wsolIn?.fromUserAccount !== sentWallet) {
         return {
           wallet: sentWallet,
           side: "sell",
           solAmount: Number(wsolIn.tokenAmount || 0),
-          source: "swap-paired-transfer"
+          source: "swap-paired-transfer-fallback"
         };
       }
+    }
+  }
+
+  return null;
+}
+
+function inferPoolAuthorityFromTokenTransfer(tx, mint) {
+  for (const transfer of tx?.tokenTransfers || []) {
+    if (transfer?.mint !== mint) {
+      continue;
+    }
+
+    const buyCounterparty = (tx?.tokenTransfers || []).find((candidate) => {
+      return (
+        candidate?.mint === WSOL_MINT &&
+        candidate?.fromUserAccount === transfer?.toUserAccount &&
+        candidate?.toUserAccount === transfer?.fromUserAccount
+      );
+    });
+
+    if (buyCounterparty) {
+      return transfer?.fromUserAccount || null;
+    }
+
+    const sellCounterparty = (tx?.tokenTransfers || []).find((candidate) => {
+      return (
+        candidate?.mint === WSOL_MINT &&
+        candidate?.toUserAccount === transfer?.fromUserAccount &&
+        candidate?.fromUserAccount === transfer?.toUserAccount
+      );
+    });
+
+    if (sellCounterparty) {
+      return transfer?.toUserAccount || null;
     }
   }
 
@@ -171,12 +237,14 @@ export function analyzePoolTransaction({ tx, poolAddress, mint, insiderWalletSet
     };
   }
 
+  const inferredPoolAuthority = inferPoolAuthorityFromTokenTransfer(tx, mint);
+
   for (const transfer of tx?.tokenTransfers || []) {
     if (transfer?.mint === WSOL_MINT || transfer?.mint !== mint) {
       continue;
     }
 
-    if (transfer?.fromUserAccount === METEORA_POOL_AUTHORITY) {
+    if (inferredPoolAuthority && transfer?.fromUserAccount === inferredPoolAuthority) {
       const wallet = transfer?.toUserAccount;
       if (!wallet) {
         continue;
@@ -192,7 +260,7 @@ export function analyzePoolTransaction({ tx, poolAddress, mint, insiderWalletSet
       };
     }
 
-    if (transfer?.toUserAccount === METEORA_POOL_AUTHORITY) {
+    if (inferredPoolAuthority && transfer?.toUserAccount === inferredPoolAuthority) {
       const wallet = transfer?.fromUserAccount;
       if (!wallet) {
         continue;

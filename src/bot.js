@@ -274,7 +274,7 @@ export class InsiderBot {
           }
         }
 
-        if (queueKey === "config") {
+      if (queueKey === "config") {
           for (const tx of sortedTxs) {
             try {
               await this.processConfigTransaction(tx);
@@ -291,21 +291,15 @@ export class InsiderBot {
 
         const poolAddress = queueKey.replace("pool:", "");
         const watcher = this.poolWatchers.get(poolAddress);
-        if (!watcher) {
+        if (!watcher || watcher.completed) {
           continue;
         }
 
         for (const tx of sortedTxs) {
+          if (watcher.completed) {
+            break;
+          }
           await watcher.ingestParsedTransaction(tx);
-        }
-
-        if (watcher.completed) {
-          logInfo("Pool watcher reached decision threshold", {
-            poolAddress,
-            label: watcher.label
-          });
-          this.unsubscribePoolLog(poolAddress);
-          this.poolWatchers.delete(poolAddress);
         }
       } catch (error) {
         logError("Failed flushing signature group", {
@@ -356,6 +350,8 @@ export class InsiderBot {
     ) {
       logInfo("Detected migration liquidity removal for current token", {
         mint: this.currentToken.mint,
+        currentInitialPool: this.currentToken.initialPool,
+        currentMigrationPool: this.currentToken.migrationPool,
         signature: tx.signature
       });
       await this.handoffExistingPoolWatchers();
@@ -381,6 +377,7 @@ export class InsiderBot {
         this.currentToken.migrationPool = migrationPool;
         logInfo("Discovered migration pool", {
           mint: this.currentToken.mint,
+          previousPool: this.currentToken.initialPool,
           migrationPool,
           signature: tx.signature
         });
@@ -537,6 +534,11 @@ export class InsiderBot {
         continue;
       }
 
+      logInfo("Handing off pool watcher for migration", {
+        mint: this.currentToken?.mint,
+        poolAddress: watcher.poolAddress,
+        label: watcher.label
+      });
       await watcher.complete("migration_handoff");
     }
   }
