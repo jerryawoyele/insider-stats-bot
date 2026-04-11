@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { logInfo } from "./logger.js";
 import { getGmgnHolderCount, getGmgnTokenPrice } from "./gmgn.js";
 import { analyzePoolTransaction } from "./parsers.js";
+import { appendPoolAnalysisReport, shouldPersistPoolAnalysisReport } from "./reports.js";
 
 function shortWallet(wallet) {
   return wallet ? `${wallet.slice(0, 8)}...` : "unknown";
@@ -206,10 +207,10 @@ export class PoolWatcher {
 
     const accept = !this.rugDetected && insiderPercent >= 90;
     const decision = reason === "migration_handoff" ? "handoff" : accept ? "accept" : "reject";
-
-    logInfo(`[${this.label}] Pool analysis complete`, {
+    const summary = {
       poolAddress: this.poolAddress,
       mint: this.mint,
+      label: this.label,
       completionReason: reason,
       totalPoolTxs: this.processedCount,
       interpretedTxCount: this.stats.interpretedTxCount,
@@ -232,7 +233,16 @@ export class PoolWatcher {
       latestPrice: this.latestPrice,
       rugDetected: this.rugDetected,
       decision
-    });
+    };
+
+    logInfo(`[${this.label}] Pool analysis complete`, summary);
+
+    if (shouldPersistPoolAnalysisReport(reason)) {
+      await appendPoolAnalysisReport({
+        recordedAt: new Date().toISOString(),
+        ...summary
+      });
+    }
 
     if (this.onComplete) {
       await this.onComplete(this);
