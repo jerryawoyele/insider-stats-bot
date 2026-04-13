@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { getAddressTransactions, getParsedTransactions } from "./helius.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import WebSocket from "ws";
-import { getGmgnHolderCount } from "./gmgn.js";
+import { getGmgnHolderCount, getGmgnTokenPrice } from "./gmgn.js";
 import {
   extractInsidersFromDevTransactions,
   isInitialPoolTx,
@@ -290,9 +290,6 @@ export class InsiderBot {
               });
             }
           }
-          if (config.firstTxOnly) {
-            await this.attachInitialPoolIfNeeded(configAddress);
-          }
           continue;
         }
 
@@ -395,7 +392,9 @@ export class InsiderBot {
           migrationPool,
           signature: tx.signature
         });
-        await this.attachPoolFollower(migrationPool, "migration", configAddress);
+        if (!config.firstTxOnly) {
+          await this.attachPoolFollower(migrationPool, "migration", configAddress);
+        }
       }
     }
   }
@@ -457,20 +456,25 @@ export class InsiderBot {
     }
 
     if (config.firstTxOnly) {
-      await this.refreshHolderCountForToken(parsed.mint, configAddress);
+      await this.refreshHolderAndPriceForToken(parsed.mint, configAddress);
     }
   }
 
-  async refreshHolderCountForToken(mint, configAddress) {
-    const holderCount = await getGmgnHolderCount(mint);
-    if (holderCount == null) {
+  async refreshHolderAndPriceForToken(mint, configAddress) {
+    const [holderCount, price] = await Promise.all([
+      getGmgnHolderCount(mint),
+      getGmgnTokenPrice(mint)
+    ]);
+
+    if (holderCount == null && price == null) {
       return;
     }
 
-    logInfo("[token-create] Holder count snapshot", {
+    logInfo("[token-create] Token snapshot", {
       mint,
       configAddress,
-      holderCount
+      holderCount: holderCount ?? null,
+      price: price ?? null
     });
   }
 
@@ -576,6 +580,10 @@ export class InsiderBot {
   }
 
   async attachInitialPoolIfNeeded(configAddress) {
+    if (config.firstTxOnly) {
+      return;
+    }
+
     const tokenState = this.currentTokens.get(configAddress);
     if (!tokenState) {
       return;
