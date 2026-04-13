@@ -236,10 +236,11 @@ export class InsiderBot {
       return;
     }
 
+    const delay = config.firstTxOnly ? 0 : config.signatureBatchWindowMs;
     this.flushTimer = setTimeout(async () => {
       this.flushTimer = null;
       await this.flushSignatures();
-    }, config.signatureBatchWindowMs);
+    }, delay);
   }
 
   async flushSignatures() {
@@ -251,21 +252,32 @@ export class InsiderBot {
         return !this.processedSignatureIndex.has(signature);
       });
 
-      for (const signature of signatureSet) {
-        this.pendingSignatureIndex.delete(signature);
-      }
-
       if (signatures.length === 0) {
         continue;
+      }
+
+      let signaturesToFetch = signatures;
+      if (config.firstTxOnly && signatures.length > 1) {
+        signaturesToFetch = signatures.slice(0, 1);
+        for (const signature of signatures.slice(1)) {
+          if (!this.pendingSignatureGroups[queueKey]) {
+            this.pendingSignatureGroups[queueKey] = new Set();
+          }
+          this.pendingSignatureGroups[queueKey].add(signature);
+        }
+      }
+
+      for (const signature of signaturesToFetch) {
+        this.pendingSignatureIndex.delete(signature);
       }
 
       try {
         logInfo("Resolving signatures through Helius", {
           queueKey,
-          count: signatures.length
+          count: signaturesToFetch.length
         });
 
-        const txs = await getParsedTransactions(signatures, {
+        const txs = await getParsedTransactions(signaturesToFetch, {
           stage: "flushSignatures",
           queueKey
         });
@@ -312,7 +324,7 @@ export class InsiderBot {
           error: error instanceof Error ? error.stack || error.message : String(error)
         });
 
-        for (const signature of signatures) {
+        for (const signature of signaturesToFetch) {
           if (this.processedSignatureIndex.has(signature) || this.pendingSignatureIndex.has(signature)) {
             continue;
           }
@@ -327,6 +339,10 @@ export class InsiderBot {
 
         this.scheduleSignatureFlush();
       }
+    }
+
+    if (config.firstTxOnly && Object.keys(this.pendingSignatureGroups).length > 0) {
+      this.scheduleSignatureFlush();
     }
   }
 
@@ -373,7 +389,7 @@ export class InsiderBot {
           initialPool,
           signature: tx.signature
         });
-        if (!config.firstTxOnly && !currentToken.migrationPool) {
+        if (!currentToken.migrationPool) {
           await this.attachPoolFollower(initialPool, "initial", configAddress);
         }
       }
@@ -392,9 +408,7 @@ export class InsiderBot {
           migrationPool,
           signature: tx.signature
         });
-        if (!config.firstTxOnly) {
-          await this.attachPoolFollower(migrationPool, "migration", configAddress);
-        }
+        await this.attachPoolFollower(migrationPool, "migration", configAddress);
       }
     }
   }
