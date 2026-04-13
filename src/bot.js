@@ -370,7 +370,9 @@ export class InsiderBot {
           initialPool,
           signature: tx.signature
         });
-        await this.attachPoolFollower(initialPool, "initial", configAddress);
+        if (!config.firstTxOnly || !currentToken.migrationPool) {
+          await this.attachPoolFollower(initialPool, "initial", configAddress);
+        }
       }
     }
 

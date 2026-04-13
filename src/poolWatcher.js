@@ -82,14 +82,6 @@ export class PoolWatcher {
       if (this.firstTxOnly) {
         if (this.leaderWalletSet.has(activity.wallet)) {
           this.leaderTxCount += 1;
-          logInfo(
-            `[EarlyScore] ${activity.isInsider ? "INSIDER " : ""}${activity.side.toUpperCase()} ${activity.solAmount.toFixed(9)} SOL: ${shortWallet(activity.wallet)} (tx #${this.leaderTxCount})`,
-            {
-              poolAddress: this.poolAddress,
-              signature: tx.signature,
-              source: activity.source
-            }
-          );
           await this.refreshHolderCount({
             force: true,
             txNumberOverride: this.leaderTxCount
@@ -244,33 +236,41 @@ export class PoolWatcher {
 
     const accept = !this.rugDetected && insiderPercent >= 90;
     const decision = reason === "migration_handoff" ? "handoff" : accept ? "accept" : "reject";
-    const summary = {
-      poolAddress: this.poolAddress,
-      mint: this.mint,
-      label: this.label,
-      completionReason: reason,
-      totalPoolTxs: this.processedCount,
-      interpretedTxCount: this.stats.interpretedTxCount,
-      totalBuyCount: this.stats.totalBuyCount,
-      totalSellCount: this.stats.totalSellCount,
-      totalBuySol: Number(this.stats.totalBuySol.toFixed(9)),
-      totalSellSol: Number(this.stats.totalSellSol.toFixed(9)),
-      insiderTxCount: this.stats.insiderTxCount,
-      insiderBuyCount: this.stats.insiderBuyCount,
-      insiderSellCount: this.stats.insiderSellCount,
-      insiderBuySol: Number(this.stats.insiderBuySol.toFixed(9)),
-      insiderSellSol: Number(this.stats.insiderSellSol.toFixed(9)),
-      insiderWalletCount: this.insiderWalletSet.size,
-      totalHolders: this.lastHolderCount,
-      insiderHolderPercent:
-        insiderHolderPercent == null ? null : Number(insiderHolderPercent.toFixed(2)),
-      insiderPercent: Number(insiderPercent.toFixed(2)),
-      holderSnapshots: this.holderSnapshots,
-      initialPrice: this.initialPrice,
-      latestPrice: this.latestPrice,
-      rugDetected: this.rugDetected,
-      decision
-    };
+    const summary = this.firstTxOnly
+      ? {
+          poolAddress: this.poolAddress,
+          mint: this.mint,
+          label: this.label,
+          completionReason: reason,
+          holderSnapshots: this.holderSnapshots
+        }
+      : {
+          poolAddress: this.poolAddress,
+          mint: this.mint,
+          label: this.label,
+          completionReason: reason,
+          totalPoolTxs: this.processedCount,
+          interpretedTxCount: this.stats.interpretedTxCount,
+          totalBuyCount: this.stats.totalBuyCount,
+          totalSellCount: this.stats.totalSellCount,
+          totalBuySol: Number(this.stats.totalBuySol.toFixed(9)),
+          totalSellSol: Number(this.stats.totalSellSol.toFixed(9)),
+          insiderTxCount: this.stats.insiderTxCount,
+          insiderBuyCount: this.stats.insiderBuyCount,
+          insiderSellCount: this.stats.insiderSellCount,
+          insiderBuySol: Number(this.stats.insiderBuySol.toFixed(9)),
+          insiderSellSol: Number(this.stats.insiderSellSol.toFixed(9)),
+          insiderWalletCount: this.insiderWalletSet.size,
+          totalHolders: this.lastHolderCount,
+          insiderHolderPercent:
+            insiderHolderPercent == null ? null : Number(insiderHolderPercent.toFixed(2)),
+          insiderPercent: Number(insiderPercent.toFixed(2)),
+          holderSnapshots: this.holderSnapshots,
+          initialPrice: this.initialPrice,
+          latestPrice: this.latestPrice,
+          rugDetected: this.rugDetected,
+          decision
+        };
 
     logInfo(`[${this.label}] Pool analysis complete`, summary);
 
