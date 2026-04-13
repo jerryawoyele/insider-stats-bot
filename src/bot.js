@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { getAddressTransactions, getParsedTransactions } from "./helius.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import WebSocket from "ws";
+import { getGmgnHolderCount } from "./gmgn.js";
 import {
   extractInsidersFromDevTransactions,
   isInitialPoolTx,
@@ -454,6 +455,23 @@ export class InsiderBot {
         insiders
       });
     }
+
+    if (config.firstTxOnly) {
+      await this.refreshHolderCountForToken(parsed.mint, configAddress);
+    }
+  }
+
+  async refreshHolderCountForToken(mint, configAddress) {
+    const holderCount = await getGmgnHolderCount(mint);
+    if (holderCount == null) {
+      return;
+    }
+
+    logInfo("[token-create] Holder count snapshot", {
+      mint,
+      configAddress,
+      holderCount
+    });
   }
 
   async fetchInsidersForToken(devWallet, createSignature, mint) {
