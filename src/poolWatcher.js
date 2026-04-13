@@ -80,14 +80,12 @@ export class PoolWatcher {
 
     if (activity) {
       if (this.firstTxOnly) {
-        if (this.leaderWalletSet.has(activity.wallet)) {
-          this.leaderTxCount += 1;
-          await this.refreshHolderCount({
-            force: true,
-            txNumberOverride: this.leaderTxCount
-          });
-          await this.complete("first_leader_tx");
-        }
+        this.leaderTxCount += 1;
+        await this.refreshHolderCount({
+          force: true,
+          txNumberOverride: this.leaderTxCount
+        });
+        await this.complete("first_pool_tx");
         return;
       }
 

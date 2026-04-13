@@ -276,7 +276,7 @@ export class InsiderBot {
           }
         }
 
-      if (queueKey.startsWith("config:")) {
+        if (queueKey.startsWith("config:")) {
           const configAddress = queueKey.replace("config:", "");
           for (const tx of sortedTxs) {
             try {
@@ -288,6 +288,9 @@ export class InsiderBot {
                 error: error instanceof Error ? error.stack || error.message : String(error)
               });
             }
+          }
+          if (config.firstTxOnly) {
+            await this.attachInitialPoolIfNeeded(configAddress);
           }
           continue;
         }
@@ -358,7 +361,9 @@ export class InsiderBot {
         currentMigrationPool: currentToken.migrationPool,
         signature: tx.signature
       });
-      await this.handoffExistingPoolWatchers(configAddress);
+      if (!config.firstTxOnly) {
+        await this.handoffExistingPoolWatchers(configAddress);
+      }
     }
 
     if (!currentToken.initialPool && isInitialPoolTx(tx)) {
@@ -370,7 +375,7 @@ export class InsiderBot {
           initialPool,
           signature: tx.signature
         });
-        if (!config.firstTxOnly || !currentToken.migrationPool) {
+        if (!config.firstTxOnly && !currentToken.migrationPool) {
           await this.attachPoolFollower(initialPool, "initial", configAddress);
         }
       }
@@ -379,7 +384,9 @@ export class InsiderBot {
     if (!currentToken.migrationPool && isMigrationTx(tx)) {
       const migrationPool = parseMigrationPoolFromTx(tx);
       if (migrationPool) {
-        await this.handoffExistingPoolWatchers(configAddress);
+        if (!config.firstTxOnly) {
+          await this.handoffExistingPoolWatchers(configAddress);
+        }
         currentToken.migrationPool = migrationPool;
         logInfo("Discovered migration pool", {
           mint: currentToken.mint,
@@ -537,6 +544,9 @@ export class InsiderBot {
           label: completedWatcher.label,
           completionReason: completedWatcher.completionReason
         });
+        if (config.firstTxOnly && completedWatcher.completionReason === "first_pool_tx") {
+          await this.stopOtherPoolWatchers(configAddress, completedWatcher.poolAddress);
+        }
         this.unsubscribePoolLog(completedWatcher.poolAddress);
         this.poolWatchers.delete(completedWatcher.poolAddress);
       }
@@ -545,6 +555,23 @@ export class InsiderBot {
     this.poolWatchers.set(poolAddress, watcher);
     await watcher.start();
     this.subscribeToPoolLogs(poolAddress, label);
+  }
+
+  async attachInitialPoolIfNeeded(configAddress) {
+    const tokenState = this.currentTokens.get(configAddress);
+    if (!tokenState) {
+      return;
+    }
+
+    if (!tokenState.initialPool || tokenState.migrationPool) {
+      return;
+    }
+
+    if (this.poolWatchers.has(tokenState.initialPool)) {
+      return;
+    }
+
+    await this.attachPoolFollower(tokenState.initialPool, "initial", configAddress);
   }
 
   async handoffExistingPoolWatchers(configAddress) {
@@ -563,6 +590,24 @@ export class InsiderBot {
         label: watcher.label
       });
       await watcher.complete("migration_handoff");
+    }
+  }
+
+  async stopOtherPoolWatchers(configAddress, winningPoolAddress) {
+    for (const [poolAddress, watcher] of this.poolWatchers.entries()) {
+      if (poolAddress === winningPoolAddress) {
+        continue;
+      }
+      if (watcher.configAddress && watcher.configAddress !== configAddress) {
+        continue;
+      }
+      if (watcher.completed) {
+        continue;
+      }
+
+      await watcher.complete("first_pool_tx");
+      this.unsubscribePoolLog(poolAddress);
+      this.poolWatchers.delete(poolAddress);
     }
   }
 
