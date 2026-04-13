@@ -9,14 +9,27 @@ function shortWallet(wallet) {
 }
 
 export class PoolWatcher {
-  constructor({ poolAddress, label, mint, insiderWallets, onComplete }) {
+  constructor({
+    poolAddress,
+    label,
+    mint,
+    configAddress,
+    insiderWallets,
+    leaderWallets,
+    firstTxOnly,
+    onComplete
+  }) {
     this.poolAddress = poolAddress;
     this.label = label;
     this.mint = mint;
+    this.configAddress = configAddress;
     this.onComplete = onComplete;
     this.insiderWalletSet = new Set(insiderWallets);
+    this.leaderWalletSet = new Set(leaderWallets || []);
+    this.firstTxOnly = Boolean(firstTxOnly);
     this.seenSignatures = new Set();
     this.processedCount = 0;
+    this.leaderTxCount = 0;
     this.completed = false;
     this.completionReason = null;
     this.stats = {
@@ -42,10 +55,12 @@ export class PoolWatcher {
   }
 
   async start() {
-    await this.refreshPrice({ force: true, markInitial: true });
-    this.priceCheckTimer = setInterval(() => {
-      this.refreshPrice().catch(() => {});
-    }, config.priceCheckIntervalMs);
+    if (!this.firstTxOnly) {
+      await this.refreshPrice({ force: true, markInitial: true });
+      this.priceCheckTimer = setInterval(() => {
+        this.refreshPrice().catch(() => {});
+      }, config.priceCheckIntervalMs);
+    }
   }
 
   async ingestParsedTransaction(tx) {
@@ -60,10 +75,30 @@ export class PoolWatcher {
       tx,
       poolAddress: this.poolAddress,
       mint: this.mint,
-      insiderWalletSet: this.insiderWalletSet
+      insiderWalletSet: this.firstTxOnly ? this.leaderWalletSet : this.insiderWalletSet
     });
 
     if (activity) {
+      if (this.firstTxOnly) {
+        if (this.leaderWalletSet.has(activity.wallet)) {
+          this.leaderTxCount += 1;
+          logInfo(
+            `[EarlyScore] ${activity.isInsider ? "INSIDER " : ""}${activity.side.toUpperCase()} ${activity.solAmount.toFixed(9)} SOL: ${shortWallet(activity.wallet)} (tx #${this.leaderTxCount})`,
+            {
+              poolAddress: this.poolAddress,
+              signature: tx.signature,
+              source: activity.source
+            }
+          );
+          await this.refreshHolderCount({
+            force: true,
+            txNumberOverride: this.leaderTxCount
+          });
+          await this.complete("first_leader_tx");
+        }
+        return;
+      }
+
       this.stats.interpretedTxCount += 1;
 
       if (activity.side === "buy") {
@@ -97,22 +132,24 @@ export class PoolWatcher {
 
     }
 
-    if (
-      this.processedCount === 1 ||
-      this.processedCount % config.holderCheckEveryTxs === 0 ||
-      this.processedCount === config.poolTxTarget
-    ) {
-      await this.refreshHolderCount({
-        force: this.processedCount === 1 || this.processedCount === config.poolTxTarget
-      });
-    }
+    if (!this.firstTxOnly) {
+      if (
+        this.processedCount === 1 ||
+        this.processedCount % config.holderCheckEveryTxs === 0 ||
+        this.processedCount === config.poolTxTarget
+      ) {
+        await this.refreshHolderCount({
+          force: this.processedCount === 1 || this.processedCount === config.poolTxTarget
+        });
+      }
 
-    if (this.processedCount >= config.poolTxTarget) {
-      await this.complete("target_reached");
+      if (this.processedCount >= config.poolTxTarget) {
+        await this.complete("target_reached");
+      }
     }
   }
 
-  async refreshHolderCount({ force = false } = {}) {
+  async refreshHolderCount({ force = false, txNumberOverride = null } = {}) {
     const now = Date.now();
     if (!force && now - this.lastHolderCheckAt < config.holderCheckMinIntervalMs) {
       return;
@@ -126,7 +163,7 @@ export class PoolWatcher {
 
     this.lastHolderCount = holderCount;
     const snapshot = {
-      txNumber: this.processedCount,
+      txNumber: txNumberOverride ?? this.processedCount,
       holderCount
     };
     this.holderSnapshots.push(snapshot);
@@ -134,7 +171,7 @@ export class PoolWatcher {
     logInfo(`[${this.label}] Holder count snapshot`, {
       mint: this.mint,
       poolAddress: this.poolAddress,
-      txNumber: this.processedCount,
+      txNumber: snapshot.txNumber,
       holderCount
     });
   }

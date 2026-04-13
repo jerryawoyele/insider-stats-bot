@@ -17,12 +17,10 @@ import { PoolWatcher } from "./poolWatcher.js";
 
 export class InsiderBot {
   constructor() {
-    this.currentToken = null;
+    this.currentTokens = new Map();
     this.poolWatchers = new Map();
     this.activePoolSubscriptions = new Map();
-    this.pendingSignatureGroups = {
-      config: new Set()
-    };
+    this.pendingSignatureGroups = {};
     this.pendingSignatureIndex = new Set();
     this.processedSignatureIndex = new Set();
     this.flushTimer = null;
@@ -40,8 +38,8 @@ export class InsiderBot {
 
   async start() {
     logInfo("Starting insider bot", {
-      leaderWallet: config.leaderWallet,
-      configAddress: config.configAddress
+      leaderWallets: config.leaderWallets,
+      configAddresses: config.configAddresses
     });
 
     this.connectWebSocket();
@@ -127,24 +125,26 @@ export class InsiderBot {
       return;
     }
 
-    const requestId = this.requestIdCounter++;
-    this.ws.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: requestId,
-        method: "logsSubscribe",
-        params: [
-          {
-            mentions: [config.configAddress]
-          },
-          {
-            commitment: "confirmed"
-          }
-        ]
-      })
-    );
+    for (const address of config.configAddresses) {
+      const requestId = this.requestIdCounter++;
+      this.ws.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestId,
+          method: "logsSubscribe",
+          params: [
+            {
+              mentions: [address]
+            },
+            {
+              commitment: "confirmed"
+            }
+          ]
+        })
+      );
 
-    this.subscriptionKinds.set(requestId, { kind: "config", address: config.configAddress });
+      this.subscriptionKinds.set(requestId, { kind: "config", address });
+    }
   }
 
   subscribeToPoolLogs(poolAddress, label) {
@@ -184,7 +184,7 @@ export class InsiderBot {
         this.subscriptionId = payload.result;
         logInfo("Subscribed to config-address logs", {
           subscriptionId: this.subscriptionId,
-          configAddress: config.configAddress
+          configAddress: requestMeta.address
         });
       }
 
@@ -217,7 +217,9 @@ export class InsiderBot {
     }
 
     const queueKey =
-      subscriptionMeta?.kind === "pool" ? `pool:${subscriptionMeta.address}` : "config";
+      subscriptionMeta?.kind === "pool"
+        ? `pool:${subscriptionMeta.address}`
+        : `config:${subscriptionMeta?.address}`;
 
     if (!this.pendingSignatureGroups[queueKey]) {
       this.pendingSignatureGroups[queueKey] = new Set();
@@ -241,7 +243,7 @@ export class InsiderBot {
 
   async flushSignatures() {
     const groups = this.pendingSignatureGroups;
-    this.pendingSignatureGroups = { config: new Set() };
+    this.pendingSignatureGroups = {};
 
     for (const [queueKey, signatureSet] of Object.entries(groups)) {
       const signatures = [...signatureSet].filter((signature) => {
@@ -274,10 +276,11 @@ export class InsiderBot {
           }
         }
 
-      if (queueKey === "config") {
+      if (queueKey.startsWith("config:")) {
+          const configAddress = queueKey.replace("config:", "");
           for (const tx of sortedTxs) {
             try {
-              await this.processConfigTransaction(tx);
+              await this.processConfigTransaction(tx, configAddress);
             } catch (error) {
               logError("Failed processing config transaction", {
                 queueKey,
@@ -326,67 +329,68 @@ export class InsiderBot {
     }
   }
 
-  async processConfigTransaction(tx) {
+  async processConfigTransaction(tx, configAddress) {
     if (!tx?.signature) {
       return;
     }
 
     if (isTokenCreateTx(tx)) {
-      await this.handleTokenCreate(tx);
+      await this.handleTokenCreate(tx, configAddress);
       return;
     }
 
-    if (!this.currentToken) {
+    const currentToken = this.currentTokens.get(configAddress);
+    if (!currentToken) {
       return;
     }
 
-    if (this.currentToken.initialPool && this.currentToken.migrationPool) {
+    if (currentToken.initialPool && currentToken.migrationPool) {
       return;
     }
 
     if (
-      !this.currentToken.migrationPool &&
-      isMigrationLiquidityRemovalTx(tx, this.currentToken.mint)
+      !currentToken.migrationPool &&
+      isMigrationLiquidityRemovalTx(tx, currentToken.mint)
     ) {
       logInfo("Detected migration liquidity removal for current token", {
-        mint: this.currentToken.mint,
-        currentInitialPool: this.currentToken.initialPool,
-        currentMigrationPool: this.currentToken.migrationPool,
+        mint: currentToken.mint,
+        currentInitialPool: currentToken.initialPool,
+        currentMigrationPool: currentToken.migrationPool,
         signature: tx.signature
       });
-      await this.handoffExistingPoolWatchers();
+      await this.handoffExistingPoolWatchers(configAddress);
     }
 
-    if (!this.currentToken.initialPool && isInitialPoolTx(tx)) {
+    if (!currentToken.initialPool && isInitialPoolTx(tx)) {
       const initialPool = parseInitialPoolFromTx(tx);
       if (initialPool) {
-        this.currentToken.initialPool = initialPool;
+        currentToken.initialPool = initialPool;
         logInfo("Discovered initial pool", {
-          mint: this.currentToken.mint,
+          mint: currentToken.mint,
           initialPool,
           signature: tx.signature
         });
-        await this.attachPoolFollower(initialPool, "initial");
+        await this.attachPoolFollower(initialPool, "initial", configAddress);
       }
     }
 
-    if (!this.currentToken.migrationPool && isMigrationTx(tx)) {
+    if (!currentToken.migrationPool && isMigrationTx(tx)) {
       const migrationPool = parseMigrationPoolFromTx(tx);
       if (migrationPool) {
-        await this.handoffExistingPoolWatchers();
-        this.currentToken.migrationPool = migrationPool;
+        await this.handoffExistingPoolWatchers(configAddress);
+        currentToken.migrationPool = migrationPool;
         logInfo("Discovered migration pool", {
-          mint: this.currentToken.mint,
-          previousPool: this.currentToken.initialPool,
+          mint: currentToken.mint,
+          previousPool: currentToken.initialPool,
           migrationPool,
           signature: tx.signature
         });
-        await this.attachPoolFollower(migrationPool, "migration");
+        await this.attachPoolFollower(migrationPool, "migration", configAddress);
       }
     }
   }
 
-  async handleTokenCreate(tx) {
+  async handleTokenCreate(tx, configAddress) {
     const parsed = parseTokenCreateTx(tx);
     if (!parsed) {
       logWarn("Token create tx matched rules but could not be parsed", {
@@ -395,47 +399,52 @@ export class InsiderBot {
       return;
     }
 
-    this.currentToken = {
+    this.currentTokens.set(configAddress, {
       ...parsed,
       initialPool: null,
       migrationPool: null,
       insiders: []
-    };
-    this.unsubscribeAllPoolLogs();
-    this.poolWatchers = new Map();
+    });
+    this.unsubscribePoolLogsForConfig(configAddress);
 
     logInfo("Discovered token create", {
       mint: parsed.mint,
       devWallet: parsed.devWallet,
-      signature: parsed.signature
+      signature: parsed.signature,
+      configAddress
     });
 
-    logInfo("Starting insider discovery", {
-      mint: parsed.mint,
-      devWallet: parsed.devWallet,
-      beforeSignature: parsed.signature
-    });
-
-    let insiders = [];
-    try {
-      insiders = await this.fetchInsidersForToken(parsed.devWallet, parsed.signature, parsed.mint);
-    } catch (error) {
-      logError("Insider discovery failed; continuing without insiders", {
+    if (!config.firstTxOnly) {
+      logInfo("Starting insider discovery", {
         mint: parsed.mint,
         devWallet: parsed.devWallet,
-        signature: parsed.signature,
-        error: error instanceof Error ? error.stack || error.message : String(error)
+        beforeSignature: parsed.signature
+      });
+
+      let insiders = [];
+      try {
+        insiders = await this.fetchInsidersForToken(parsed.devWallet, parsed.signature, parsed.mint);
+      } catch (error) {
+        logError("Insider discovery failed; continuing without insiders", {
+          mint: parsed.mint,
+          devWallet: parsed.devWallet,
+          signature: parsed.signature,
+          error: error instanceof Error ? error.stack || error.message : String(error)
+        });
+      }
+
+      const tokenState = this.currentTokens.get(configAddress);
+      if (tokenState) {
+        tokenState.insiders = insiders;
+      }
+
+      logInfo("Derived insiders from dev history", {
+        mint: parsed.mint,
+        devWallet: parsed.devWallet,
+        insiderCount: insiders.length,
+        insiders
       });
     }
-
-    this.currentToken.insiders = insiders;
-
-    logInfo("Derived insiders from dev history", {
-      mint: parsed.mint,
-      devWallet: parsed.devWallet,
-      insiderCount: insiders.length,
-      insiders
-    });
   }
 
   async fetchInsidersForToken(devWallet, createSignature, mint) {
@@ -502,16 +511,24 @@ export class InsiderBot {
     return extractInsidersFromDevTransactions(devWallet, allTxs);
   }
 
-  async attachPoolFollower(poolAddress, label) {
-    if (this.poolWatchers.has(poolAddress) || !this.currentToken) {
+  async attachPoolFollower(poolAddress, label, configAddress) {
+    if (this.poolWatchers.has(poolAddress)) {
+      return;
+    }
+
+    const tokenState = this.currentTokens.get(configAddress);
+    if (!tokenState) {
       return;
     }
 
     const watcher = new PoolWatcher({
       poolAddress,
       label,
-      mint: this.currentToken.mint,
-      insiderWallets: this.currentToken.insiders,
+      mint: tokenState.mint,
+      configAddress,
+      insiderWallets: tokenState.insiders,
+      leaderWallets: config.leaderWallets,
+      firstTxOnly: config.firstTxOnly,
       onComplete: async (completedWatcher) => {
         logInfo("Pool watcher reached decision threshold", {
           poolAddress: completedWatcher.poolAddress,
@@ -528,14 +545,18 @@ export class InsiderBot {
     this.subscribeToPoolLogs(poolAddress, label);
   }
 
-  async handoffExistingPoolWatchers() {
+  async handoffExistingPoolWatchers(configAddress) {
     for (const watcher of this.poolWatchers.values()) {
       if (watcher.completed) {
         continue;
       }
 
+      if (watcher.configAddress && watcher.configAddress !== configAddress) {
+        continue;
+      }
+
       logInfo("Handing off pool watcher for migration", {
-        mint: this.currentToken?.mint,
+        mint: this.currentTokens.get(configAddress)?.mint,
         poolAddress: watcher.poolAddress,
         label: watcher.label
       });
@@ -543,17 +564,29 @@ export class InsiderBot {
     }
   }
 
-  unsubscribeAllPoolLogs() {
-    for (const watcher of this.poolWatchers.values()) {
-      watcher.stop();
+  unsubscribePoolLogsForConfig(configAddress) {
+    const poolAddresses = [];
+    for (const [poolAddress, watcher] of this.poolWatchers.entries()) {
+      if (watcher.configAddress === configAddress) {
+        watcher.stop();
+        poolAddresses.push(poolAddress);
+      }
     }
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.activePoolSubscriptions.clear();
+      for (const poolAddress of poolAddresses) {
+        this.activePoolSubscriptions.delete(poolAddress);
+        this.poolWatchers.delete(poolAddress);
+      }
       return;
     }
 
-    for (const [poolAddress, subscriptionId] of this.activePoolSubscriptions.entries()) {
+    for (const poolAddress of poolAddresses) {
+      const subscriptionId = this.activePoolSubscriptions.get(poolAddress);
+      if (!subscriptionId) {
+        this.poolWatchers.delete(poolAddress);
+        continue;
+      }
       this.ws.send(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -568,9 +601,9 @@ export class InsiderBot {
         poolAddress,
         subscriptionId
       });
+      this.activePoolSubscriptions.delete(poolAddress);
+      this.poolWatchers.delete(poolAddress);
     }
-
-    this.activePoolSubscriptions.clear();
   }
 
   unsubscribePoolLog(poolAddress) {
