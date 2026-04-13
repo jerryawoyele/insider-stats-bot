@@ -52,7 +52,6 @@ export class PoolWatcher {
     this.latestPrice = null;
     this.lastLoggedPrice = null;
     this.rugDetected = false;
-    this.firstTxDetails = null;
   }
 
   async start() {
@@ -81,24 +80,14 @@ export class PoolWatcher {
 
     if (activity) {
       if (this.firstTxOnly) {
-        this.leaderTxCount += 1;
-        this.firstTxDetails = {
-          txNumber: this.leaderTxCount,
-          signature: tx.signature,
-          side: activity.side,
-          solAmount: Number(activity.solAmount || 0),
-          wallet: activity.wallet,
-          source: activity.source
-        };
-        await this.refreshHolderAndPriceSnapshot({
-          txNumber: this.leaderTxCount,
-          signature: tx.signature,
-          side: activity.side,
-          solAmount: Number(activity.solAmount || 0),
-          wallet: activity.wallet,
-          source: activity.source
-        });
-        await this.complete("first_pool_tx");
+        if (this.leaderWalletSet.has(activity.wallet)) {
+          this.leaderTxCount += 1;
+          await this.refreshHolderCount({
+            force: true,
+            txNumberOverride: this.leaderTxCount
+          });
+          await this.complete("first_leader_tx");
+        }
         return;
       }
 
@@ -179,42 +168,6 @@ export class PoolWatcher {
     });
   }
 
-  async refreshHolderAndPriceSnapshot({
-    txNumber,
-    signature,
-    side,
-    solAmount,
-    wallet,
-    source
-  }) {
-    const [holderCount, price] = await Promise.all([
-      getGmgnHolderCount(this.mint),
-      getGmgnTokenPrice(this.mint)
-    ]);
-
-    if (holderCount != null) {
-      this.lastHolderCount = holderCount;
-      const snapshot = {
-        txNumber,
-        holderCount
-      };
-      this.holderSnapshots.push(snapshot);
-    }
-
-    logInfo(`[${this.label}] First pool tx snapshot`, {
-      mint: this.mint,
-      poolAddress: this.poolAddress,
-      txNumber,
-      signature,
-      side,
-      solAmount: Number(solAmount || 0),
-      wallet: shortWallet(wallet),
-      source,
-      holderCount: holderCount ?? null,
-      price: price ?? null
-    });
-  }
-
   async refreshPrice({ force = false, markInitial = false } = {}) {
     if (this.completed && !force) {
       return;
@@ -289,8 +242,7 @@ export class PoolWatcher {
           mint: this.mint,
           label: this.label,
           completionReason: reason,
-          holderSnapshots: this.holderSnapshots,
-          firstTx: this.firstTxDetails
+          holderSnapshots: this.holderSnapshots
         }
       : {
           poolAddress: this.poolAddress,

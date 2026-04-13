@@ -236,11 +236,10 @@ export class InsiderBot {
       return;
     }
 
-    const delay = config.firstTxOnly ? 0 : config.signatureBatchWindowMs;
     this.flushTimer = setTimeout(async () => {
       this.flushTimer = null;
       await this.flushSignatures();
-    }, delay);
+    }, config.signatureBatchWindowMs);
   }
 
   async flushSignatures() {
@@ -256,28 +255,17 @@ export class InsiderBot {
         continue;
       }
 
-      let signaturesToFetch = signatures;
-      if (config.firstTxOnly && signatures.length > 1) {
-        signaturesToFetch = signatures.slice(0, 1);
-        for (const signature of signatures.slice(1)) {
-          if (!this.pendingSignatureGroups[queueKey]) {
-            this.pendingSignatureGroups[queueKey] = new Set();
-          }
-          this.pendingSignatureGroups[queueKey].add(signature);
-        }
-      }
-
-      for (const signature of signaturesToFetch) {
+      for (const signature of signatures) {
         this.pendingSignatureIndex.delete(signature);
       }
 
       try {
         logInfo("Resolving signatures through Helius", {
           queueKey,
-          count: signaturesToFetch.length
+          count: signatures.length
         });
 
-        const txs = await getParsedTransactions(signaturesToFetch, {
+        const txs = await getParsedTransactions(signatures, {
           stage: "flushSignatures",
           queueKey
         });
@@ -324,7 +312,7 @@ export class InsiderBot {
           error: error instanceof Error ? error.stack || error.message : String(error)
         });
 
-        for (const signature of signaturesToFetch) {
+        for (const signature of signatures) {
           if (this.processedSignatureIndex.has(signature) || this.pendingSignatureIndex.has(signature)) {
             continue;
           }
@@ -341,9 +329,6 @@ export class InsiderBot {
       }
     }
 
-    if (config.firstTxOnly && Object.keys(this.pendingSignatureGroups).length > 0) {
-      this.scheduleSignatureFlush();
-    }
   }
 
   async processConfigTransaction(tx, configAddress) {
@@ -389,7 +374,7 @@ export class InsiderBot {
           initialPool,
           signature: tx.signature
         });
-        if (!currentToken.migrationPool) {
+        if (!config.firstTxOnly && !currentToken.migrationPool) {
           await this.attachPoolFollower(initialPool, "initial", configAddress);
         }
       }
@@ -408,7 +393,9 @@ export class InsiderBot {
           migrationPool,
           signature: tx.signature
         });
-        await this.attachPoolFollower(migrationPool, "migration", configAddress);
+        if (!config.firstTxOnly) {
+          await this.attachPoolFollower(migrationPool, "migration", configAddress);
+        }
       }
     }
   }
